@@ -39,43 +39,57 @@ async def load_watermark():
         return False
 
 async def add_watermark_to_image(image_bytes: bytes) -> BytesIO:
-    """Додає водяний знак до фото"""
+    """Додає водяний знак до фото - повністю переписано без ANTIALIAS"""
     global watermark_image
     
-    # Відкриваємо отримане фото
-    img = Image.open(BytesIO(image_bytes)).convert('RGBA')
-    
-    # Копіюємо водяний знак
-    watermark = watermark_image.copy()
-    
-    # Змінюємо розмір водяного знаку - ВИПРАВЛЕНО!
-    watermark.thumbnail((WATERMARK_SIZE, WATERMARK_SIZE), Image.Resampling.LANCZOS)  # ← ТУТ ВИПРАВИТИ!
-    
-    # Регулюємо прозорість
-    if WATERMARK_OPACITY < 1.0:
-        pixels = watermark.load()
-        for i in range(watermark.width):
-            for j in range(watermark.height):
-                r, g, b, a = pixels[i, j]
-                pixels[i, j] = (r, g, b, int(a * WATERMARK_OPACITY))
-    
-    # Позиція (правий верхній кут)
-    padding = 20
-    x = img.width - watermark.width - padding
-    y = padding
-    
-    # Накладаємо водяний знак
-    img.paste(watermark, (x, y), watermark)
-    
-    # Конвертуємо назад в RGB
-    result = img.convert('RGB')
-    
-    # Зберігаємо в байти
-    output = BytesIO()
-    result.save(output, format='JPEG', quality=95)
-    output.seek(0)
-    
-    return output
+    try:
+        # Відкриваємо отримане фото
+        img = Image.open(BytesIO(image_bytes)).convert('RGBA')
+        
+        # Копіюємо водяний знак
+        watermark = watermark_image.copy()
+        
+        # Простий спосіб зміни розміру - без ANTIALIAS
+        # Використовуємо resize замість thumbnail
+        original_width, original_height = watermark.size
+        if original_width > original_height:
+            new_width = WATERMARK_SIZE
+            new_height = int((WATERMARK_SIZE / original_width) * original_height)
+        else:
+            new_height = WATERMARK_SIZE
+            new_width = int((WATERMARK_SIZE / original_height) * original_width)
+        
+        # Змінюємо розмір - використовуємо LANCZOS (сучасна заміна ANTIALIAS)
+        watermark = watermark.resize((new_width, new_height), Image.LANCZOS)
+        
+        # Регулюємо прозорість
+        if WATERMARK_OPACITY < 1.0:
+            # Створюємо нове зображення з прозорістю
+            alpha = watermark.split()[3]
+            alpha = alpha.point(lambda p: p * WATERMARK_OPACITY)
+            watermark.putalpha(alpha)
+        
+        # Позиція (правий верхній кут)
+        padding = 20
+        x = img.width - watermark.width - padding
+        y = padding
+        
+        # Накладаємо водяний знак
+        img.paste(watermark, (x, y), watermark)
+        
+        # Конвертуємо назад в RGB
+        result = img.convert('RGB')
+        
+        # Зберігаємо в байти
+        output = BytesIO()
+        result.save(output, format='JPEG', quality=95)
+        output.seek(0)
+        
+        return output
+        
+    except Exception as e:
+        logger.error(f"Помилка у add_watermark_to_image: {e}")
+        raise e
 
 async def add_watermark_to_video(input_bytes: bytes, is_gif: bool = False) -> BytesIO:
     """Додає водяний знак до відео або GIF"""
@@ -96,7 +110,7 @@ async def add_watermark_to_video(input_bytes: bytes, is_gif: bool = False) -> By
         watermark_array = np.array(watermark_image)
         watermark_clip = ImageClip(watermark_array, ismask=False, transparent=True)
         
-        # Змінюємо розмір водяного знаку - ВИПРАВЛЕНО!
+        # Змінюємо розмір водяного знаку
         watermark_clip = watermark_clip.resize(height=WATERMARK_SIZE)
         
         # Встановлюємо прозорість
@@ -253,4 +267,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
