@@ -49,7 +49,7 @@ async def add_watermark_to_image(image_bytes: bytes) -> BytesIO:
     watermark = watermark_image.copy()
     
     # Змінюємо розмір водяного знаку - ВИПРАВЛЕНО!
-    watermark.thumbnail((WATERMARK_SIZE, WATERMARK_SIZE), Image.Resampling.LANCZOS)
+    watermark.thumbnail((WATERMARK_SIZE, WATERMARK_SIZE), Image.Resampling.LANCZOS)  # ← ТУТ ВИПРАВИТИ!
     
     # Регулюємо прозорість
     if WATERMARK_OPACITY < 1.0:
@@ -253,3 +253,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
