@@ -1,0 +1,5 @@
+python-telegram-bot==20.7
+Pillow==10.1.0
+requests==2.31.0
+moviepy==1.0.3
+numpy==1.24.3
