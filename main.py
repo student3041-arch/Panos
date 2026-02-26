@@ -24,14 +24,17 @@ WATERMARK_OPACITY = float(os.environ.get('WATERMARK_OPACITY', '0.5'))
 WATERMARK_SIZE = int(os.environ.get('WATERMARK_SIZE', '100'))
 
 watermark_image = None
+watermark_array = None  # Для відео
 
 async def load_watermark():
     """Завантажує водяний знак з URL"""
-    global watermark_image
+    global watermark_image, watermark_array
     try:
         if WATERMARK_URL:
             response = requests.get(WATERMARK_URL)
             watermark_image = Image.open(BytesIO(response.content)).convert('RGBA')
+            # Для відео конвертуємо одразу в numpy array
+            watermark_array = np.array(watermark_image)
             logger.info("✅ Водяний знак завантажено з URL")
             return True
     except Exception as e:
@@ -39,78 +42,67 @@ async def load_watermark():
         return False
 
 async def add_watermark_to_image(image_bytes: bytes) -> BytesIO:
-    """Додає водяний знак до фото - повністю переписано без ANTIALIAS"""
+    """Додає водяний знак до фото"""
     global watermark_image
     
-    try:
-        # Відкриваємо отримане фото
-        img = Image.open(BytesIO(image_bytes)).convert('RGBA')
-        
-        # Копіюємо водяний знак
-        watermark = watermark_image.copy()
-        
-        # Простий спосіб зміни розміру - без ANTIALIAS
-        # Використовуємо resize замість thumbnail
-        original_width, original_height = watermark.size
-        if original_width > original_height:
-            new_width = WATERMARK_SIZE
-            new_height = int((WATERMARK_SIZE / original_width) * original_height)
-        else:
-            new_height = WATERMARK_SIZE
-            new_width = int((WATERMARK_SIZE / original_height) * original_width)
-        
-        # Змінюємо розмір - використовуємо LANCZOS (сучасна заміна ANTIALIAS)
-        watermark = watermark.resize((new_width, new_height), Image.LANCZOS)
-        
-        # Регулюємо прозорість
-        if WATERMARK_OPACITY < 1.0:
-            # Створюємо нове зображення з прозорістю
-            alpha = watermark.split()[3]
-            alpha = alpha.point(lambda p: p * WATERMARK_OPACITY)
-            watermark.putalpha(alpha)
-        
-        # Позиція (правий верхній кут)
-        padding = 20
-        x = img.width - watermark.width - padding
-        y = padding
-        
-        # Накладаємо водяний знак
-        img.paste(watermark, (x, y), watermark)
-        
-        # Конвертуємо назад в RGB
-        result = img.convert('RGB')
-        
-        # Зберігаємо в байти
-        output = BytesIO()
-        result.save(output, format='JPEG', quality=95)
-        output.seek(0)
-        
-        return output
-        
-    except Exception as e:
-        logger.error(f"Помилка у add_watermark_to_image: {e}")
-        raise e
+    # Відкриваємо отримане фото
+    img = Image.open(BytesIO(image_bytes)).convert('RGBA')
+    
+    # Копіюємо водяний знак
+    watermark = watermark_image.copy()
+    
+    # Змінюємо розмір водяного знаку - ВИКОРИСТОВУЄМО LANCZOS
+    watermark.thumbnail((WATERMARK_SIZE, WATERMARK_SIZE), Image.Resampling.LANCZOS)
+    
+    # Регулюємо прозорість
+    if WATERMARK_OPACITY < 1.0:
+        alpha = watermark.split()[3]
+        alpha = alpha.point(lambda p: p * WATERMARK_OPACITY)
+        watermark.putalpha(alpha)
+    
+    # Позиція (правий верхній кут)
+    padding = 20
+    x = img.width - watermark.width - padding
+    y = padding
+    
+    # Накладаємо водяний знак
+    img.paste(watermark, (x, y), watermark)
+    
+    # Конвертуємо назад в RGB
+    result = img.convert('RGB')
+    
+    # Зберігаємо в байти
+    output = BytesIO()
+    result.save(output, format='JPEG', quality=95)
+    output.seek(0)
+    
+    return output
 
 async def add_watermark_to_video(input_bytes: bytes, is_gif: bool = False) -> BytesIO:
-    """Додає водяний знак до відео або GIF"""
-    global watermark_image
+    """Додає водяний знак до відео або GIF - ПОВНІСТЮ ПЕРЕПИСАНО"""
+    global watermark_array
     
-    # Створюємо тимчасові файли
-    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_input:
-        temp_input.write(input_bytes)
-        temp_input_path = temp_input.name
-    
-    temp_output_path = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
+    temp_input = None
+    temp_output = None
     
     try:
+        # Створюємо тимчасові файли
+        temp_input = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+        temp_input.write(input_bytes)
+        temp_input_path = temp_input.name
+        temp_input.close()
+        
+        temp_output = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+        temp_output_path = temp_output.name
+        temp_output.close()
+        
         # Завантажуємо відео
         video = VideoFileClip(temp_input_path)
         
-        # Конвертуємо PIL Image в numpy array для moviepy
-        watermark_array = np.array(watermark_image)
+        # Створюємо водяний знак з numpy array
         watermark_clip = ImageClip(watermark_array, ismask=False, transparent=True)
         
-        # Змінюємо розмір водяного знаку
+        # Змінюємо розмір - використовуємо метод moviepy, не PIL!
         watermark_clip = watermark_clip.resize(height=WATERMARK_SIZE)
         
         # Встановлюємо прозорість
@@ -120,7 +112,7 @@ async def add_watermark_to_video(input_bytes: bytes, is_gif: bool = False) -> By
         padding = 20
         watermark_clip = watermark_clip.set_position((video.w - watermark_clip.w - padding, padding))
         
-        # Встановлюємо тривалість як у відео
+        # Встановлюємо тривалість
         watermark_clip = watermark_clip.set_duration(video.duration)
         
         # Накладаємо водяний знак
@@ -128,9 +120,13 @@ async def add_watermark_to_video(input_bytes: bytes, is_gif: bool = False) -> By
         
         # Зберігаємо результат
         if is_gif:
-            final.write_gif(temp_output_path, fps=video.fps)
+            final.write_gif(temp_output_path, fps=video.fps, program='ffmpeg')
         else:
-            final.write_videofile(temp_output_path, codec='libx264', audio_codec='aac')
+            final.write_videofile(temp_output_path, codec='libx264', audio_codec='aac', logger=None)
+        
+        # Закриваємо кліпи
+        video.close()
+        final.close()
         
         # Зчитуємо результат
         with open(temp_output_path, 'rb') as f:
@@ -144,8 +140,10 @@ async def add_watermark_to_video(input_bytes: bytes, is_gif: bool = False) -> By
     finally:
         # Очищаємо тимчасові файли
         try:
-            os.unlink(temp_input_path)
-            os.unlink(temp_output_path)
+            if temp_input_path and os.path.exists(temp_input_path):
+                os.unlink(temp_input_path)
+            if temp_output_path and os.path.exists(temp_output_path):
+                os.unlink(temp_output_path)
         except:
             pass
 
@@ -203,7 +201,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Помилка: {e}")
-        await update.message.reply_text(f"❌ Помилка: {str(e)}")
+        await update.message.reply_text(f"❌ Помилка відео: {str(e)}")
 
 async def handle_animation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обробляє GIF (animation)"""
@@ -234,7 +232,7 @@ async def handle_animation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Помилка: {e}")
-        await update.message.reply_text(f"❌ Помилка: {str(e)}")
+        await update.message.reply_text(f"❌ Помилка GIF: {str(e)}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start"""
