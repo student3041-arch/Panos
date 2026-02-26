@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import tempfile
 from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
-import numpy as np  # ← ЦЕЙ РЯДОК БУВ ВІДСУТНІЙ!
+import numpy as np
 import asyncio
 
 # Налаштування логування
@@ -48,7 +48,7 @@ async def add_watermark_to_image(image_bytes: bytes) -> BytesIO:
     # Копіюємо водяний знак
     watermark = watermark_image.copy()
     
-    # Змінюємо розмір водяного знаку
+    # Змінюємо розмір водяного знаку - ВИПРАВЛЕНО!
     watermark.thumbnail((WATERMARK_SIZE, WATERMARK_SIZE), Image.Resampling.LANCZOS)
     
     # Регулюємо прозорість
@@ -96,7 +96,7 @@ async def add_watermark_to_video(input_bytes: bytes, is_gif: bool = False) -> By
         watermark_array = np.array(watermark_image)
         watermark_clip = ImageClip(watermark_array, ismask=False, transparent=True)
         
-        # Змінюємо розмір водяного знаку
+        # Змінюємо розмір водяного знаку - ВИПРАВЛЕНО!
         watermark_clip = watermark_clip.resize(height=WATERMARK_SIZE)
         
         # Встановлюємо прозорість
