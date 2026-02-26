@@ -1,13 +1,12 @@
 import os
 import logging
 import requests
+import subprocess
 from io import BytesIO
 from PIL import Image
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import tempfile
-from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
-import numpy as np
 import asyncio
 
 # Налаштування логування
@@ -24,17 +23,14 @@ WATERMARK_OPACITY = float(os.environ.get('WATERMARK_OPACITY', '0.5'))
 WATERMARK_SIZE = int(os.environ.get('WATERMARK_SIZE', '100'))
 
 watermark_image = None
-watermark_array = None  # Для відео
 
 async def load_watermark():
     """Завантажує водяний знак з URL"""
-    global watermark_image, watermark_array
+    global watermark_image
     try:
         if WATERMARK_URL:
             response = requests.get(WATERMARK_URL)
             watermark_image = Image.open(BytesIO(response.content)).convert('RGBA')
-            # Для відео конвертуємо одразу в numpy array
-            watermark_array = np.array(watermark_image)
             logger.info("✅ Водяний знак завантажено з URL")
             return True
     except Exception as e:
@@ -51,7 +47,7 @@ async def add_watermark_to_image(image_bytes: bytes) -> BytesIO:
     # Копіюємо водяний знак
     watermark = watermark_image.copy()
     
-    # Змінюємо розмір водяного знаку - ВИКОРИСТОВУЄМО LANCZOS
+    # Змінюємо розмір водяного знаку
     watermark.thumbnail((WATERMARK_SIZE, WATERMARK_SIZE), Image.Resampling.LANCZOS)
     
     # Регулюємо прозорість
@@ -79,54 +75,40 @@ async def add_watermark_to_image(image_bytes: bytes) -> BytesIO:
     return output
 
 async def add_watermark_to_video(input_bytes: bytes, is_gif: bool = False) -> BytesIO:
-    """Додає водяний знак до відео або GIF - ПОВНІСТЮ ПЕРЕПИСАНО"""
-    global watermark_array
+    """Додає водяний знак до відео або GIF через ffmpeg"""
     
-    temp_input = None
-    temp_output = None
+    # Створюємо тимчасові файли
+    temp_input = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+    temp_input.write(input_bytes)
+    temp_input_path = temp_input.name
+    temp_input.close()
+    
+    temp_output = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+    temp_output_path = temp_output.name
+    temp_output.close()
+    
+    # Зберігаємо водяний знак як тимчасовий файл
+    watermark_temp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+    watermark_image.save(watermark_temp.name)
+    watermark_temp.close()
     
     try:
-        # Створюємо тимчасові файли
-        temp_input = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
-        temp_input.write(input_bytes)
-        temp_input_path = temp_input.name
-        temp_input.close()
+        # Команда ffmpeg для накладання водяного знаку
+        cmd = [
+            'ffmpeg', '-i', temp_input_path,
+            '-i', watermark_temp.name,
+            '-filter_complex',
+            f'[1:v]scale={WATERMARK_SIZE}:{WATERMARK_SIZE},format=rgba,colorchannelmixer=aa={WATERMARK_OPACITY}[watermark];[0:v][watermark]overlay=main_w-overlay_w-20:20',
+            '-codec:a', 'copy',
+            '-y', temp_output_path
+        ]
         
-        temp_output = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
-        temp_output_path = temp_output.name
-        temp_output.close()
+        # Виконуємо команду
+        result = subprocess.run(cmd, capture_output=True, text=True)
         
-        # Завантажуємо відео
-        video = VideoFileClip(temp_input_path)
-        
-        # Створюємо водяний знак з numpy array
-        watermark_clip = ImageClip(watermark_array, ismask=False, transparent=True)
-        
-        # Змінюємо розмір - використовуємо метод moviepy, не PIL!
-        watermark_clip = watermark_clip.resize(height=WATERMARK_SIZE)
-        
-        # Встановлюємо прозорість
-        watermark_clip = watermark_clip.set_opacity(WATERMARK_OPACITY)
-        
-        # Встановлюємо позицію (правий верхній кут)
-        padding = 20
-        watermark_clip = watermark_clip.set_position((video.w - watermark_clip.w - padding, padding))
-        
-        # Встановлюємо тривалість
-        watermark_clip = watermark_clip.set_duration(video.duration)
-        
-        # Накладаємо водяний знак
-        final = CompositeVideoClip([video, watermark_clip])
-        
-        # Зберігаємо результат
-        if is_gif:
-            final.write_gif(temp_output_path, fps=video.fps, program='ffmpeg')
-        else:
-            final.write_videofile(temp_output_path, codec='libx264', audio_codec='aac', logger=None)
-        
-        # Закриваємо кліпи
-        video.close()
-        final.close()
+        if result.returncode != 0:
+            logger.error(f"FFmpeg помилка: {result.stderr}")
+            raise Exception("Помилка обробки відео")
         
         # Зчитуємо результат
         with open(temp_output_path, 'rb') as f:
@@ -135,15 +117,14 @@ async def add_watermark_to_video(input_bytes: bytes, is_gif: bool = False) -> By
         return BytesIO(output_bytes)
         
     except Exception as e:
-        logger.error(f"Помилка обробки відео: {e}")
+        logger.error(f"Помилка: {e}")
         raise e
     finally:
         # Очищаємо тимчасові файли
         try:
-            if temp_input_path and os.path.exists(temp_input_path):
-                os.unlink(temp_input_path)
-            if temp_output_path and os.path.exists(temp_output_path):
-                os.unlink(temp_output_path)
+            os.unlink(temp_input_path)
+            os.unlink(temp_output_path)
+            os.unlink(watermark_temp.name)
         except:
             pass
 
@@ -201,10 +182,10 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Помилка: {e}")
-        await update.message.reply_text(f"❌ Помилка відео: {str(e)}")
+        await update.message.reply_text(f"❌ Помилка: {str(e)}")
 
 async def handle_animation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обробляє GIF (animation)"""
+    """Обробляє GIF"""
     try:
         if watermark_image is None:
             if not await load_watermark():
@@ -232,7 +213,7 @@ async def handle_animation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Помилка: {e}")
-        await update.message.reply_text(f"❌ Помилка GIF: {str(e)}")
+        await update.message.reply_text(f"❌ Помилка: {str(e)}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start"""
@@ -250,6 +231,13 @@ def main():
     if not TOKEN:
         logger.error("❌ TELEGRAM_BOT_TOKEN не знайдено в Railway Variables")
         return
+    
+    # Перевіряємо наявність ffmpeg
+    try:
+        subprocess.run(['ffmpeg', '-version'], capture_output=True)
+        logger.info("✅ FFmpeg знайдено")
+    except:
+        logger.error("❌ FFmpeg не знайдено!")
     
     # Створюємо додаток
     app = Application.builder().token(TOKEN).build()
